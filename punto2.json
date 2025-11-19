@@ -1,0 +1,45 @@
+{
+  "name": "punto 2",
+  "type": "Tipo 2",
+  "non_terminals": [
+    "S",
+    "C",
+    "D",
+    "E",
+    "F",
+    "A",
+    "B"
+  ],
+  "terminals": [
+    "a",
+    "b"
+  ],
+  "productions": {
+    "S": [
+      "A"
+    ],
+    "A": [
+      "aB",
+      "bD"
+    ],
+    "B": [
+      "aC",
+      "bE"
+    ],
+    "C": [
+      "aA",
+      "bF"
+    ],
+    "D": [
+      "bE"
+    ],
+    "E": [
+      "bF"
+    ],
+    "F": [
+      "bE",
+      "ε"
+    ]
+  },
+  "start_symbol": "S"
+}

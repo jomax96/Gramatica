@@ -204,7 +204,7 @@ class Type2Parser(Parser):
             return False, None
         
         # Intentar parsear con backtracking
-        result = self._parse_recursive(string, 0, self.grammar.start_symbol, [])
+        result = self._parse_recursive(string, 0, self.grammar.start_symbol, [], 0)
         
         if result and result[0] == len(string):
             tree = result[1]
@@ -229,28 +229,30 @@ class Type2Parser(Parser):
         
         return None
     
-    def _parse_recursive(self, string: str, pos: int, symbol: str, used_productions: List) -> Optional[Tuple[int, DerivationTree]]:
+    def _parse_recursive(self, string: str, pos: int, symbol: str, used_productions: List, depth: int = 0) -> Optional[Tuple[int, DerivationTree]]:
         """
         Parsing recursivo con backtracking
+        
+        Args:
+            depth: Profundidad de recursión para evitar bucles infinitos
         
         Returns:
             None si falla, (nueva_posición, árbol) si tiene éxito
         """
-        node = TreeNode(symbol)
-        
-        # Si el símbolo es terminal, intentar hacer match
-        if symbol in self.grammar.terminals:
-            match_result = self._try_match_terminal(string, pos)
-            if match_result:
-                new_pos, matched_terminal = match_result
-                # Verificar que el terminal matcheado sea exactamente el símbolo buscado
-                if matched_terminal == symbol:
-                    node.add_child(TreeNode(symbol))
-                    return (new_pos, DerivationTree(node))
+        # Protección contra recursión infinita
+        if depth > len(string) * 2:
             return None
         
-        # Si el símbolo es no terminal, probar todas sus producciones
+        node = TreeNode(symbol)
+        
+        # PRIORIDAD: Si el símbolo es no terminal Y está en producciones, tratarlo como no terminal
+        # Esto resuelve el conflicto cuando un símbolo está en ambos conjuntos
         if symbol in self.grammar.productions:
+            # Es un no terminal, probar todas sus producciones
+            # IMPORTANTE: Probar todas las producciones y elegir la que consume más caracteres
+            best_result = None
+            best_pos = pos
+            
             for production in self.grammar.productions[symbol]:
                 # Probar esta producción
                 current_pos = pos
@@ -268,24 +270,59 @@ class Type2Parser(Parser):
                         continue
                     
                     # Intentar parsear este símbolo
-                    result = self._parse_recursive(string, current_pos, prod_sym, used_productions + [(symbol, production)])
+                    result = self._parse_recursive(string, current_pos, prod_sym, used_productions + [(symbol, production)], depth + 1)
                     
                     if result is None:
                         success = False
                         break
                     
-                    current_pos, child_tree = result
+                    new_pos, child_tree = result
+                    # Verificar que no retrocedimos
+                    if new_pos < current_pos:
+                        # Si retrocedimos, algo está mal
+                        success = False
+                        break
+                    
+                    # Si no avanzamos, puede ser válido si el símbolo puede generar ε
+                    # (esto se maneja naturalmente si new_pos == current_pos y el símbolo puede ser vacío)
+                    current_pos = new_pos
                     production_node.add_child(child_tree.root)
                 
-                # Si esta producción funcionó, retornar el resultado
+                # Si esta producción funcionó, guardarla si es mejor o igual que las anteriores
                 if success:
-                    return (current_pos, DerivationTree(production_node))
+                    if current_pos > best_pos:
+                        # Esta producción consume más caracteres, es mejor
+                        best_result = (current_pos, DerivationTree(production_node))
+                        best_pos = current_pos
+                    elif current_pos == best_pos and best_result is None:
+                        # Primera producción exitosa con esta posición
+                        best_result = (current_pos, DerivationTree(production_node))
+                    # Si la producción es solo ε y estamos en el final, también considerar
+                    elif current_pos == pos and ('ε' in prod_symbols or '' in prod_symbols):
+                        if best_result is None:
+                            best_result = (current_pos, DerivationTree(production_node))
+            
+            # Retornar el mejor resultado encontrado
+            if best_result:
+                return best_result
+        
+        # Si el símbolo es terminal (y NO es no terminal), intentar hacer match
+        if symbol in self.grammar.terminals:
+            match_result = self._try_match_terminal(string, pos)
+            if match_result:
+                new_pos, matched_terminal = match_result
+                # Verificar que el terminal matcheado sea exactamente el símbolo buscado
+                if matched_terminal == symbol:
+                    node.add_child(TreeNode(symbol))
+                    return (new_pos, DerivationTree(node))
+            return None
         
         return None
     
     def _parse_production_symbols(self, production: str) -> List[str]:
         """
         Parsea los símbolos de una producción, reconociendo terminales multi-carácter
+        Prioriza no terminales cuando hay ambigüedad
         """
         if not production.strip():
             return []
@@ -296,15 +333,27 @@ class Type2Parser(Parser):
         
         # Si no hay espacios, intentar identificar símbolos
         # Esto es más complejo: necesitamos distinguir entre caracteres individuales
-        # y terminales multi-carácter
+        # y terminales multi-carácter, y también reconocer no terminales con apóstrofes como "S'"
         symbols = []
         i = 0
         while i < len(production):
-            # Intentar encontrar el terminal más largo que empiece en esta posición
-            matched = False
+            char = production[i]
             remaining = production[i:]
+            matched = False
             
-            # Ordenar terminales por longitud (más largos primero)
+            # PRIMERO: Verificar si hay un no terminal que empiece aquí (incluyendo apóstrofes)
+            # Buscar no terminales de mayor longitud primero (para capturar "S'" antes que "S")
+            for nt in sorted(self.grammar.non_terminals, key=len, reverse=True):
+                if remaining.startswith(nt):
+                    symbols.append(nt)
+                    i += len(nt)
+                    matched = True
+                    break
+            
+            if matched:
+                continue
+            
+            # Si no es no terminal, buscar terminales multi-carácter
             for terminal in sorted(self.grammar.terminals, key=len, reverse=True):
                 if remaining.startswith(terminal):
                     symbols.append(terminal)
@@ -312,15 +361,9 @@ class Type2Parser(Parser):
                     matched = True
                     break
             
+            # Si no encontramos nada, tratar como carácter individual
             if not matched:
-                # Si no es un terminal conocido, tomar como no terminal (un carácter)
-                char = production[i]
-                # Verificar si es un no terminal
-                if char in self.grammar.non_terminals:
-                    symbols.append(char)
-                else:
-                    # Tratar como terminal de un carácter
-                    symbols.append(char)
+                symbols.append(char)
                 i += 1
         
         return symbols
